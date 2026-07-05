@@ -26,10 +26,13 @@ logger = logging.getLogger(__name__)
 # explicit, since a raw per-bar Sharpe is not comparable across timeframes.
 # Equity session ~ 6.5 trading hours/day, ~252 trading days/year.
 PERIODS_PER_YEAR_15MIN_EQUITY = 252 * 26     # 6.5h / 15min = 26 bars/day
-# Session-aligned 4-hr equity bars produce one full 4h bar + one short 2.5h
-# trailing bar per day (bot.calendar.build_4hr_equity_bars) -> ~1.625
-# bars/day, not the 1.625 you'd get from a clean 6.5/4 division of equal-size
-# bars. This factor is APPROXIMATE for that reason.
+# Session-aligned 4-hr equity bars: the factor below is the TIME-EQUIVALENT
+# number of 4-hour periods in a session (6.5 trading hours / 4h = 1.625),
+# NOT a bar count. By count, build_4hr_equity_bars produces 2 bars/day (one
+# full 4h bar + one short 2.5h trailing bar), but those bars are unequal in
+# duration, so annualizing on the count would over-weight the short bar. The
+# time-equivalent 1.625 is used instead, and is APPROXIMATE because per-bar
+# returns still mix the two unequal bar lengths.
 PERIODS_PER_YEAR_4HR_EQUITY = 252 * 1.625
 PERIODS_PER_YEAR_1HR_CRYPTO = 24 * 365       # crypto trades 24/7, no equity calendar
 
