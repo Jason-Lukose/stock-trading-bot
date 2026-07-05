@@ -34,6 +34,7 @@ A paper-trading research bot for Alpaca. Educational/research only. The source P
 - Small commits, descriptive messages, one module per session where practical.
 - If a doc and the code disagree, stop and flag it — don't silently pick one.
 - If the task requires weakening any safety rule above, stop and ask Jason.
+- **Log significant decisions to docs/DecisionLog.md.** At the end of any session that makes a real engineering or process decision (architecture choice, rejected alternative, a bug found in review, a gate call, a parameter change), append a numbered entry (next `D-###`) recording the decision, what was rejected, and the reasoning. The *why* and the rejected alternative are the point — they're what make the decision defensible later. Do not silently make a decision that belongs in the log.
 
 ## Owner
 Jason Lukose. Goal: a safe, reproducible research platform — profitability claims come only from our own walk-forward evidence.

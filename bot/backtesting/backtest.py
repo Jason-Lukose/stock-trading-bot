@@ -11,11 +11,27 @@ Design for anti-look-ahead by construction (Backtesting.md):
     two bars (exit this fill, re-enter next), since only one fill happens
     per bar.
 """
+import logging
 import math
 import random
 import statistics
 from dataclasses import dataclass, field
 from enum import Enum
+
+logger = logging.getLogger(__name__)
+
+# Approximate annualization factors (periods_per_year) for Sharpe, by bar
+# frequency. Backtesting.md requires the risk-free assumption to be stated
+# (see compute_metrics: 0%) — the annualization convention must be equally
+# explicit, since a raw per-bar Sharpe is not comparable across timeframes.
+# Equity session ~ 6.5 trading hours/day, ~252 trading days/year.
+PERIODS_PER_YEAR_15MIN_EQUITY = 252 * 26     # 6.5h / 15min = 26 bars/day
+# Session-aligned 4-hr equity bars produce one full 4h bar + one short 2.5h
+# trailing bar per day (bot.calendar.build_4hr_equity_bars) -> ~1.625
+# bars/day, not the 1.625 you'd get from a clean 6.5/4 division of equal-size
+# bars. This factor is APPROXIMATE for that reason.
+PERIODS_PER_YEAR_4HR_EQUITY = 252 * 1.625
+PERIODS_PER_YEAR_1HR_CRYPTO = 24 * 365       # crypto trades 24/7, no equity calendar
 
 
 class TargetPosition(Enum):
@@ -129,13 +145,21 @@ def split_is_oos(bars, is_fraction=0.7, warmup_context_bars=0):
 
 
 def run_backtest(bars, strategy_fn, cost_model, quantity=1.0, initial_equity=100000.0,
-                  warmup_bars=0, seed=None):
+                  warmup_bars=0, seed=None, periods_per_year=None):
     """Run one event-driven backtest over `bars` (chronological, no gaps the
     caller hasn't already validated via bot.data.market_data.validate_bars).
 
     `strategy_fn(window) -> TargetPosition` is called once per bar with
     `bars[: i + 1]` — never later bars. `cost_model` is required (see
     CostModel — cannot be zero-cost).
+
+    `periods_per_year` (e.g. PERIODS_PER_YEAR_15MIN_EQUITY) annualizes the
+    reported Sharpe; omit to get only the per-bar Sharpe (metrics["sharpe_per_bar"]).
+
+    A position still open at the final bar is force-closed there (see below)
+    so trade-based metrics (count, win rate, expectancy, profit factor) and
+    equity-curve-based metrics (total_return, drawdown, Sharpe) are computed
+    on the same, cost-inclusive set of trades.
     """
     if cost_model.jitter_bps and seed is None:
         raise ValueError("cost_model.jitter_bps is set; an explicit seed is required for reproducibility")
@@ -204,7 +228,40 @@ def run_backtest(bars, strategy_fn, cost_model, quantity=1.0, initial_equity=100
             elif target is not TargetPosition.FLAT:
                 pending = ("enter", target.value)
 
-    metrics = compute_metrics(trades, equity_curve, initial_equity, n, exposure_bars)
+    # Terminal liquidation: a position still open after the last bar has no
+    # bar N+1 to fill an exit on, so it is force-closed AT THE FINAL BAR'S
+    # CLOSE (not open — there's no next-bar open to use). Cost is still
+    # charged, so this trade is priced consistently with every mid-run trade
+    # and doesn't leave trade metrics and equity-curve metrics disagreeing
+    # about total P&L (the P0 bug this replaces: an open position was
+    # previously marked into the equity curve but never recorded as a Trade,
+    # and never charged its exit cost).
+    if position is not None and bars:
+        final_bar = bars[-1]
+        is_buy = position.direction == -1
+        exit_price = cost_model.fill_price(final_bar.close, is_buy, rng)
+        trade = Trade(
+            direction=position.direction,
+            entry_time=position.entry_time,
+            entry_price=position.entry_price,
+            exit_time=final_bar.timestamp,
+            exit_price=exit_price,
+            quantity=position.quantity,
+        )
+        cash += trade.pnl
+        trades.append(trade)
+        position = None
+        if equity_curve:
+            equity_curve[-1] = (final_bar.timestamp, cash)
+
+    # A decision made ON the final bar would normally fill at bar N+1's open,
+    # which doesn't exist. It is dropped rather than filled at an arbitrary
+    # price — logged so this is never silent.
+    if pending is not None:
+        logger.info("run_backtest: unfillable pending action %s decided on the final bar; dropped.", pending)
+        pending = None
+
+    metrics = compute_metrics(trades, equity_curve, initial_equity, n, exposure_bars, periods_per_year)
 
     return BacktestResult(
         trades=trades,
@@ -222,6 +279,12 @@ def compute_metrics(trades, equity_curve, initial_equity, total_bars, exposure_b
     section. Risk-free rate assumption for Sharpe: 0% (short lookback bars
     make a nonzero risk-free drag negligible and this avoids picking an
     arbitrary rate).
+
+    Sharpe is reported two ways: `sharpe_per_bar` (raw, always present) and
+    `sharpe_annualized` (None unless `periods_per_year` is given). Comparing
+    raw per-bar Sharpe across strategies on different timeframes (15-min vs
+    1-hr vs 4-hr bars) is meaningless, so callers comparing strategies MUST
+    pass `periods_per_year` and read `sharpe_annualized`.
     """
     total_trades = len(trades)
     wins = [t.pnl for t in trades if t.pnl > 0]
@@ -239,10 +302,19 @@ def compute_metrics(trades, equity_curve, initial_equity, total_bars, exposure_b
     total_return = (final_equity - initial_equity) / initial_equity
 
     equity_values = [e for _, e in equity_curve]
+    # Max drawdown is computed close-to-close on the equity curve; it does not
+    # see intra-bar excursions (e.g. a bar's low breaching -15% before closing
+    # higher), so it understates true intraperiod drawdown. Relevant because
+    # the Minimum Evidence Gate reads "OOS max drawdown <= 15%" against this.
     max_drawdown = _max_drawdown(equity_values)
 
     bar_returns = _bar_returns(equity_values)
-    sharpe = _sharpe(bar_returns, periods_per_year)
+    sharpe_per_bar = _sharpe_per_bar(bar_returns)
+    sharpe_annualized = (
+        sharpe_per_bar * math.sqrt(periods_per_year)
+        if (sharpe_per_bar is not None and periods_per_year)
+        else None
+    )
 
     exposure_pct = (exposure_bars / total_bars) if total_bars else 0.0
 
@@ -256,7 +328,9 @@ def compute_metrics(trades, equity_curve, initial_equity, total_bars, exposure_b
         "profit_factor": profit_factor,
         "expectancy": expectancy,
         "max_drawdown": max_drawdown,
-        "sharpe": sharpe,
+        "sharpe_per_bar": sharpe_per_bar,
+        "sharpe_annualized": sharpe_annualized,
+        "periods_per_year_assumption": periods_per_year,
         "sharpe_risk_free_assumption": 0.0,
         "total_return": total_return,
         "exposure_pct": exposure_pct,
@@ -278,6 +352,11 @@ def _max_drawdown(equity_values):
 
 
 def _bar_returns(equity_values):
+    # Fills use next-bar-open regardless of how much wall-clock time elapses
+    # to that bar (overnight, weekend, or the short 2.5h trailing 4-hr bar),
+    # so consecutive bar-to-bar equity returns mix intraday and overnight/gap
+    # moves. This is why the periods_per_year annualization factors above are
+    # approximate rather than exact.
     returns = []
     for prev, curr in zip(equity_values, equity_values[1:]):
         if prev != 0:
@@ -285,14 +364,11 @@ def _bar_returns(equity_values):
     return returns
 
 
-def _sharpe(bar_returns, periods_per_year=None):
+def _sharpe_per_bar(bar_returns):
     if len(bar_returns) < 2:
         return None
     mean_return = statistics.mean(bar_returns)
     stdev = statistics.pstdev(bar_returns)
     if stdev == 0:
         return None
-    sharpe = mean_return / stdev
-    if periods_per_year:
-        sharpe *= math.sqrt(periods_per_year)
-    return sharpe
+    return mean_return / stdev

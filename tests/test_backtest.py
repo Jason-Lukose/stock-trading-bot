@@ -1,3 +1,4 @@
+import math
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
@@ -50,6 +51,18 @@ def test_no_lookahead_shift():
     decisions_a = [d for i, d in result_a.decisions if i <= cutoff]
     decisions_b = [d for i, d in result_b.decisions if i <= cutoff]
     assert decisions_a == decisions_b
+
+    # Strengthened: a signal-only check would pass an implementation that
+    # leaked future data into FILLS or ACCOUNTING while computing signals
+    # correctly. Also require that every trade closed at/before the cutoff,
+    # and the equity-curve prefix through the cutoff, are unaffected.
+    trades_a_before_cutoff = [t for t in result_a.trades if t.exit_time <= bars[cutoff].timestamp]
+    trades_b_before_cutoff = [t for t in result_b.trades if t.exit_time <= bars[cutoff].timestamp]
+    assert trades_a_before_cutoff == trades_b_before_cutoff
+
+    equity_prefix_a = result_a.equity_curve[: cutoff + 1]
+    equity_prefix_b = result_b.equity_curve[: cutoff + 1]
+    assert equity_prefix_a == equity_prefix_b
 
 
 def test_fill_at_next_bar():
@@ -192,6 +205,91 @@ def test_4hr_bar_construction():
     assert result.total_bars == 2
     assert len(result.equity_curve) == 2
     assert result.trades == []
+
+
+def test_position_held_to_end_is_recorded():
+    """A position opened and never exited by the strategy must still be
+    force-closed and recorded as a Trade at the final bar, with exit cost
+    applied — otherwise trade metrics (count, win rate, expectancy, profit
+    factor) silently disagree with equity-curve metrics (total_return,
+    drawdown, Sharpe), which is exactly what happened before this fix.
+    """
+    bars = _bars(6, start_price=100.0, step=10.0)  # opens: 100,110,...,150; closes: +0.1
+
+    def strategy_fn(window):
+        return bt.TargetPosition.LONG if len(window) >= 3 else bt.TargetPosition.FLAT
+
+    cost_model = bt.CostModel(cost_bps=10.0)
+    result = bt.run_backtest(bars, strategy_fn, cost_model, quantity=1.0)
+
+    assert len(result.trades) == 1
+    trade = result.trades[0]
+
+    final_bar = bars[-1]
+    expected_exit = final_bar.close * 0.9990  # sell-to-close cost pushes price down
+    assert trade.exit_time == final_bar.timestamp
+    assert trade.exit_price == pytest.approx(expected_exit)
+    # Exit price must differ from the raw close -- cost was actually charged.
+    assert trade.exit_price != final_bar.close
+
+    # Trade metrics and equity-curve metrics must reconcile: final cash
+    # equals initial equity plus the (cost-inclusive) trade pnl, and the
+    # equity curve's last point must match it exactly (no leftover
+    # unrealized/uncosted mark).
+    expected_final_equity = 100000.0 + trade.pnl
+    assert result.equity_curve[-1][1] == pytest.approx(expected_final_equity)
+    assert result.metrics["total_trades"] == 1
+    assert result.metrics["total_return"] == pytest.approx(trade.pnl / 100000.0)
+
+
+def test_dangling_final_bar_decision_is_dropped_not_crashed():
+    """A NEW entry/exit decided on the very last bar has no bar N+1 to fill
+    on. It must be dropped (not silently mis-filled at some other price, and
+    not crash) -- verified here by ensuring no trade is fabricated from it.
+    """
+    bars = _bars(5)
+
+    def strategy_fn(window):
+        # Only wants to enter on the very last bar.
+        return bt.TargetPosition.LONG if len(window) == len(bars) else bt.TargetPosition.FLAT
+
+    cost_model = bt.equity_cost_model()
+    result = bt.run_backtest(bars, strategy_fn, cost_model)
+
+    assert result.trades == []
+    assert result.metrics["total_trades"] == 0
+
+
+def test_sharpe_annualization():
+    bars = _bars(20, start_price=100.0, step=1.0)
+
+    def strategy_fn(window):
+        return bt.TargetPosition.LONG if len(window) >= 2 else bt.TargetPosition.FLAT
+
+    cost_model = bt.equity_cost_model()
+
+    result_raw = bt.run_backtest(bars, strategy_fn, cost_model)
+    assert result_raw.metrics["sharpe_per_bar"] is not None
+    assert result_raw.metrics["sharpe_annualized"] is None  # no periods_per_year given
+    assert result_raw.metrics["periods_per_year_assumption"] is None
+
+    result_15min = bt.run_backtest(
+        bars, strategy_fn, cost_model, periods_per_year=bt.PERIODS_PER_YEAR_15MIN_EQUITY
+    )
+    result_4hr = bt.run_backtest(
+        bars, strategy_fn, cost_model, periods_per_year=bt.PERIODS_PER_YEAR_4HR_EQUITY
+    )
+
+    sharpe_per_bar = result_raw.metrics["sharpe_per_bar"]
+    assert result_15min.metrics["sharpe_annualized"] == pytest.approx(
+        sharpe_per_bar * math.sqrt(bt.PERIODS_PER_YEAR_15MIN_EQUITY)
+    )
+    assert result_4hr.metrics["sharpe_annualized"] == pytest.approx(
+        sharpe_per_bar * math.sqrt(bt.PERIODS_PER_YEAR_4HR_EQUITY)
+    )
+    # Different timeframes must scale to different annualized values --
+    # this is the whole point of the fix (raw per-bar Sharpe isn't comparable).
+    assert result_15min.metrics["sharpe_annualized"] != result_4hr.metrics["sharpe_annualized"]
 
 
 def test_split_is_oos_default_70_30():
