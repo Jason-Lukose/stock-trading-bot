@@ -1,4 +1,4 @@
-alpaca-py==0.33.2
+alpaca-py==0.43.5
 python-dotenv==1.0.1
 pandas==2.2.3
 numpy==2.1.3
