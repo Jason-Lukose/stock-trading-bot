@@ -86,6 +86,14 @@ The audit confirmed the look-ahead architecture, cost direction, warm-up handlin
 - **P2s:** the look-ahead test only checked decisions (not trades/equity), so it would pass a fill-leak; drawdown is close-to-close (understates intra-bar); no gap-awareness across overnight/irregular bars.
 Decision: gate stays red; fixes go to Sonnet, then Opus re-reviews. This is the build-then-adversarially-review discipline working exactly as designed — green tests alone would have shipped a corrupted evidence pipeline.
 
+**[D-022] Phase 3 backtester fixes applied and re-reviewed: PASS — gate green, cleared to Phase 4.**
+Sonnet applied the review fixes and Opus re-reviewed against each original finding. Fixed: **P0** terminal-position accounting (an open position at the final bar is now force-closed, recorded as a Trade, and reconciled so trade metrics and equity-curve metrics share one cost-inclusive trade set); **P1** Sharpe annualization (`sharpe_per_bar` always reported, `sharpe_annualized` populated only when `periods_per_year` is passed, with the assumption recorded); **P1** terminal exit cost (now charged, verified for both long and short sides); **P2** the look-ahead test now also asserts trades-closed-before-cutoff and the equity-curve prefix are unchanged, so a fill/accounting leak can no longer pass it.
+Rejected alternative: trusting the green re-run. Reasoning: each fix was confirmed **revert-sensitive** (neutralizing the P0 block fails `test_position_held_to_end_is_recorded`; forcing `sharpe_annualized` to None fails `test_sharpe_annualization`) — a test that passes with or without the fix is not protection. The new terminal-liquidation code was itself regression-audited: short-side cost direction (buy-to-cover fills above close), empty-bar guard (no crash, no phantom trade), and no double-count (`sum(trade.pnl) == final_equity − initial` to the cent). Suite green at 59/59.
+
+**[D-023] Terminal position is force-closed at the final bar's CLOSE, not its open.**
+Rejected alternative: fill the terminal exit at a next-bar open, consistent with how every mid-run fill works (decision at bar N fills at bar N+1's open).
+Reasoning: at the end of the dataset there is no bar N+1, so no next-bar open exists to fill against. The final bar's close is the only honest price actually observed at that point — inventing a synthetic next open would be fabricating data. Exit cost is still charged at that close, so the terminal trade prices consistently with every mid-run trade and does not bias `total_return`. This is the defensible answer to "why close and not open?": not a shortcut, but the absence of any later price to use.
+
 ---
 
 ## Standing Conventions
