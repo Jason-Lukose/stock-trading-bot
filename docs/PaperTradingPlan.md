@@ -18,6 +18,8 @@ The PDF's "at least 2 weeks" is also insufficient: for the 4-hr trend strategy, 
 
 **Phase A — Shadow mode (1 week).** Bot runs live against paper account but with order submission disabled: signals, risk decisions, and would-be orders are logged only. Verifies data feed, scheduling, calendar handling, and signal timing with zero execution risk.
 
+> **Amendment (D-030, post-Phase 4):** none of the current strategies passed the Minimum Evidence Gate (Backtesting.md) — see D-029. The Entry Criteria above gate *execution* phases (B/C) on a strategy passing that gate; Phase A submits no orders, so it is safe and useful to run the current (research-only, evidence-gate-failing) strategies through Phase A anyway, purely to validate the end-to-end pipeline (data → signal → risk decision → logged would-be order) with zero execution risk. No strategy proceeds to Phase B or C until it independently passes the evidence gate.
+
 **Phase B — Single instrument (2+ weeks).** Enable the single strategy with the most backtest trades (likely SPY mean reversion). Daily human log review.
 
 **Phase C — Full portfolio (4+ weeks or ≥ 30 combined trades, whichever is longer).** All gated strategies enabled. Correlation filter behavior observed in practice.
