@@ -65,6 +65,46 @@ def ema(values, period):
     return out
 
 
+def rolling_max(values, period):
+    """Rolling maximum, inclusive of the current bar (consistent with sma()'s
+    and rolling_std()'s window convention: values[i - period + 1 : i + 1]).
+    First `period - 1` entries are None.
+
+    Callers implementing a breakout strategy (e.g. Donchian-channel style —
+    "close breaks above the N-period high") must compare against the PRIOR
+    bar's value (`rolling_max(...)[i - 1]`), not `[i]`: since this window
+    includes the current bar's own high, and high >= close always holds for
+    a valid bar, `close[i] > rolling_max(highs, period)[i]` can never be true
+    — the current bar's own high makes the inclusive-window comparison
+    self-defeating. Shifting to `[i - 1]` compares today's close against the
+    completed prior N-bar high, which is the standard, non-self-referential
+    breakout definition.
+    """
+    if period <= 0:
+        raise ValueError("period must be positive")
+    n = len(values)
+    out = [None] * n
+    for i in range(n):
+        if i >= period - 1:
+            out[i] = max(values[i - period + 1 : i + 1])
+    return out
+
+
+def rolling_min(values, period):
+    """Rolling minimum, inclusive of the current bar. See rolling_max()'s
+    docstring for the same shift-by-one caveat when used for breakdown
+    detection (low <= close always holds, so compare against `[i - 1]`).
+    """
+    if period <= 0:
+        raise ValueError("period must be positive")
+    n = len(values)
+    out = [None] * n
+    for i in range(n):
+        if i >= period - 1:
+            out[i] = min(values[i - period + 1 : i + 1])
+    return out
+
+
 def atr(high, low, close, period=14):
     """Average True Range. True range at index 0 is high[0] - low[0] (no
     prior close exists); every later index uses max(high-low,

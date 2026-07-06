@@ -46,6 +46,42 @@ def test_atr_hand_computed():
     assert result[4] == 2.0
 
 
+def test_rolling_max_hand_computed():
+    values = [3, 1, 4, 1, 5]
+    result = indicators.rolling_max(values, period=3)
+    assert result[0] is None
+    assert result[1] is None
+    assert result[2] == 4   # max(3,1,4)
+    assert result[3] == 4   # max(1,4,1)
+    assert result[4] == 5   # max(4,1,5)
+
+
+def test_rolling_min_hand_computed():
+    values = [3, 1, 4, 1, 5]
+    result = indicators.rolling_min(values, period=3)
+    assert result[0] is None
+    assert result[1] is None
+    assert result[2] == 1   # min(3,1,4)
+    assert result[3] == 1   # min(1,4,1)
+    assert result[4] == 1   # min(4,1,5)
+
+
+def test_rolling_max_rejects_nonpositive_period():
+    try:
+        indicators.rolling_max([1, 2, 3], 0)
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+
+
+def test_rolling_min_rejects_nonpositive_period():
+    try:
+        indicators.rolling_min([1, 2, 3], 0)
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+
+
 def test_no_partial_window_values_emitted():
     """Warm-up rule: no signal-eligible indicator value before its window
     is fully populated with real data (Backtesting.md anti-look-ahead rule).
@@ -57,8 +93,10 @@ def test_no_partial_window_values_emitted():
     std_result = indicators.rolling_std(values, period)
     ema_result = indicators.ema(values, period)
     atr_result = indicators.atr(values, values, values, period)
+    max_result = indicators.rolling_max(values, period)
+    min_result = indicators.rolling_min(values, period)
 
-    for series in (sma_result, std_result, ema_result, atr_result):
+    for series in (sma_result, std_result, ema_result, atr_result, max_result, min_result):
         assert all(v is None for v in series[: period - 1]), series
         assert series[period - 1] is not None
 
