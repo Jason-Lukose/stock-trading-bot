@@ -9,8 +9,15 @@ venv/
 logs/
 data/raw/
 data/processed/
+
+# reports/ default: transient/operational output (ad-hoc chart, scratch
+# metrics) stays ignored. reports/backtests/ is the exception: committed
+# evidence artifacts (Backtesting.md report requirement, BuildPlan.md's
+# "Report artifacts committed to /reports") -- explicitly un-ignored below.
 reports/*.png
 reports/*.csv
+!reports/backtests/
+!reports/backtests/**
 trades.csv
 daily_pnl.csv
 

@@ -1,6 +1,8 @@
 """Phase 4 backtest runner: fetch real historical bars, run each of the 5
 StrategySpec.md instruments through the backtester per Backtesting.md's
-protocol, and write metrics tables + equity-curve charts to /reports.
+protocol, and write metrics tables + equity-curve charts to
+reports/backtests/phase4_<run-date>/ (committed evidence artifacts -- an
+explicit exception to reports/'s default gitignore, see .gitignore).
 
 This script RUNS strategies exactly as specified. It does not tune
 parameters and does not decide whether results are "good enough" for paper
@@ -51,7 +53,13 @@ from bot.strategies import mean_reversion as mr
 from bot.strategies import momentum_breakout as mb
 from bot.strategies import trend_following as tf
 
-REPORTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "reports")
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# Committed evidence artifacts live under reports/backtests/<run>/, which is
+# an explicit exception to reports/'s default gitignore (transient/ad-hoc
+# output stays ignored; this directory is the Backtesting.md/BuildPlan.md
+# "report artifacts committed to /reports" deliverable). One dated
+# subdirectory per run so re-runs don't silently overwrite prior evidence.
+REPORTS_DIR = os.path.join(REPO_ROOT, "reports", "backtests", f"phase4_{datetime.now(timezone.utc):%Y%m%d}")
 YEARS_OF_HISTORY = 2
 IS_FRACTION = 0.70
 INITIAL_EQUITY = 100_000.0
@@ -234,7 +242,7 @@ def save_equity_chart(name, is_result, oos_result):
     ax.legend()
     fig.autofmt_xdate()
     fig.tight_layout()
-    path = os.path.join(REPORTS_DIR, f"equity_curve_{name}.png")
+    path = os.path.join(REPORTS_DIR, f"{name}_equity.png")
     fig.savefig(path, dpi=120)
     plt.close(fig)
     return path
@@ -346,7 +354,7 @@ def main():
         })
 
     # --- Write metrics table (CSV) ---
-    csv_path = os.path.join(REPORTS_DIR, "phase4_metrics.csv")
+    csv_path = os.path.join(REPORTS_DIR, "metrics.csv")
     fieldnames = ["instrument", "phase", "bars", "total_trades", "win_rate", "avg_win", "avg_loss",
                   "profit_factor", "expectancy", "max_drawdown", "sharpe_annualized", "total_return",
                   "exposure_pct", "trade_duration"]
